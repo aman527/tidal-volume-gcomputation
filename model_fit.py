@@ -33,35 +33,28 @@ def apply_by_stay( _handle_group, column_name: str):
     return last_column
 
 
-def _get_last(group):
-    """# Convert each row of a given group into storing the LAST measurement (ie the value at time t - 1)."""
-    # Inputs tuple where elemnent 1 is a pd.Series, prepends NaN to said Series.
-    # pd.concat isn't used because it is VERY slow when used multiple times
-    last_group = [np.nan]
-    last_group[1:] =  group[:len(group)-1]
-    last_group = pd.Series(last_group)
-    return last_group
+def _group_by_stay(*columns):
+    return df.groupby('stay_id', axis='rows')[list(columns)]
 
+def get_last(column):
+    """Convert each row of a given column into storing the LAST measurement (the value at time t - 1)."""
+    grouped = _group_by_stay(column)
+    return grouped.shift(periods=1)
 
-def _get_time_since_last_meas(group):
+def time_since_last(column):
     """# Get time since last measurement, where group is a column of bools representing whether a meas was taken."""
-    # If there are no measurements, just return a list of NaNs
-    if (group.sum() == 0):
-        return pd.Series(np.full(len(group), np.nan))
-    # Otherwise, determine the indices of all measurements 
-    ones = group.loc[group == True].index    
-    # Get a list of the difference in time values between each measurement
-    steps_between_meas = np.concatenate([ones[1:], [len(group)]]) - ones
-    # Values of ts_last should be NaN before the first measurement
-    pre_meas_1 = np.full(ones[0], np.nan)
-    # post_meas_1 is now a nested list of range objects
-    post_meas_1 = [np.arange(i) for i in steps_between_meas]
-    # flatten the nested list
-    post_meas_1 = np.concatenate(post_meas_1)
-    # concatenate the pre- and post- measurement 1 values
-    new_group = np.concatenate((pre_meas_1, post_meas_1))
-    return pd.Series(new_group)
-
+    grouped = _group_by_stay(column)
+    def _handle_group(g):
+        not_measured = ~g
+        # Take the cumulative sum of the not_measured column
+        # This gives us a value that increases only when not_measured is true
+        cum_sum = not_measured.cumsum()
+        # Create a column tracking the value of cum_sum at the last measurement
+        cum_sum_at_last_meas = cum_sum.where(g).ffill()
+        # We can now subtract it from cum_sum to obtain ts_last!
+        new_g = cum_sum - cum_sum_at_last_meas
+        return new_g
+    return grouped.transform(_handle_group)
 
 def time_since_prev(column):
     """Create new column tracking the time since the previous measurement.
@@ -74,7 +67,7 @@ def time_since_prev(column):
     # Condition to replace with 'previous' value: if a measurement was taken at the current timestep and if study hour is > 1
     condition = (df[meas_col] == True) & (df['study_hour'] > 1)
     # Create a numpy array that tracks what the 'previous' value WOULD be at any given time point
-    prev_value = np.concatenate([[0], df[ts_last_col]])[:-1] + 1
+    prev_value = np.concatenate([[np.nan], df[ts_last_col]])[:-1] + 1
     # If the condition is satisfied, replace the 'time since last' value with the new, 'time since previous', value
     new_column = np.where(condition, prev_value, df[ts_last_col])
     return pd.Series(new_column)
