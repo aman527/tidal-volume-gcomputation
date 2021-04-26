@@ -18,30 +18,16 @@ df['last_driving_pressure_meas'] = (df['last_plateau_pressure_meas'] == True) & 
 df['imputed_TV_standardized_meas'] = df['tidal_volume_set_meas']
 df['last_imputed_TV_standardized_meas'] = df['last_tidal_volume_set_meas']
 
-def apply_by_stay( _handle_group, column_name: str):
-    """Create a new column resulting from the elementwise application of a given function to the inputted column."""
-    if (len(df[column_name]) <= 1):
-        return pd.Series([np.nan])
-    # First, split column by stay_id
-    grouped = df.groupby('stay_id', axis='rows')[column_name]
-    # Each group is a tuple, so extract the pd.Series from each group
-    grouped = map(lambda group: group[1], grouped)
-    # Apply the function to each group
-    last_groups = [_handle_group(g) for g in grouped]
-    # Concatenate the list of groups into one final column, resetting indices
-    last_column = pd.concat(last_groups, ignore_index=True)
-    return last_column
 
-
-def _group_by_stay(*columns):
+def _group_by_stay(*columns: str):
     return df.groupby('stay_id', axis='rows')[list(columns)]
 
-def get_last(column):
+def get_last(column: str):
     """Convert each row of a given column into storing the LAST measurement (the value at time t - 1)."""
     grouped = _group_by_stay(column)
     return grouped.shift(periods=1)
 
-def time_since_last(column):
+def time_since_last(column: str):
     """# Get time since last measurement, where group is a column of bools representing whether a meas was taken."""
     grouped = _group_by_stay(column)
     def _handle_group(g):
@@ -56,7 +42,7 @@ def time_since_last(column):
         return new_g
     return grouped.transform(_handle_group)
 
-def time_since_prev(column):
+def time_since_prev(column: str):
     """Create new column tracking the time since the previous measurement.
 
     Previous differs from last in one key way: when a value is measured at the current time point, LAST = 0. 
@@ -85,3 +71,77 @@ for p in ('driving_pressure', 'plateau_pressure'):
 
 df['peep_set_change'] = df['peep_set'] - df['last_peep_set']
 df['tidal_volume_set_change'] = df['tidal_volume_set'] - df['last_tidal_volume_set']
+
+
+def at_prev_dp_meas(column: str):
+    """Get value of a measurement at the previous time driving pressure was measured."""
+    grouped = _group_by_stay()
+    def _handle_group(g):
+        # Get the value at the LAST time driving pressure was measured
+        at_last_dp_meas = g[column].where(g['driving_pressure_meas']).ffill()
+        # Convert to value at PREVIOUS time by replacing values at timesteps when DP was measured with the proper 'previous' value
+        prev_value = at_last_dp_meas.shift(periods=1)     # Track what the 'previous' value would be at any given time point
+        condition = (g['driving_pressure_meas']) & (g['study_hour'] > 1)
+        return at_last_dp_meas.where(condition, other=prev_value)
+    return grouped.transform(_handle_group)
+
+
+df['peep_set_at_prev_dp_meas'] = at_prev_dp_meas('peep_set')
+df['dp_peep_change'] = df['peep_set'] - df['peep_set_at_prev_dp_meas']
+
+df['tidal_volume_set_at_prev_dp_meas'] = at_prev_dp_meas('tidal_volume')
+df['dp_tidal_volume_change'] = df['tidal_volume'] - df['tidal_volume_set_at_prev_dp_meas']
+
+df['dp_at_prev_dp_meas'] = at_prev_dp_meas('driving_pressure')
+df['dp_change_since_prev_dp_meas'] = df['driving_pressure'] - df['dp_at_prev_dp_meas']
+df['last_dp_change_since_prev_dp_meas'] = get_last('dp_change_since_prev_dp_meas')
+
+df['last_total_fluids'] = get_last('total_fluids')
+
+df['any_rate_std'] = df['rate_std'] > 0
+df['last_any_rate_std'] = get_last('any_rate_std')
+
+df['total_rate_std'] = _group_by_stay('rate_std').cumsum()
+df['last_total_rate_std'] = get_last('total_rate_std')
+
+df = df[(df['study_started']) & (df['study_hour'] <= END_HOUR)]
+df = df.sort_values(['stay_id', 'hour'])
+
+# TODO: Implement cubic b-spline models for hour and study_hour
+
+data['any_amount'] = data['amount'] > 0 
+data['rate_std_meas'] = 1
+data['any_rate_std_meas'] = 1
+data['last_any_rate_std_meas'] = 1
+data['amount_meas'] = 1
+data['last_rate_std_meas'] = 1
+data['last_amount_meas'] = 1
+data['rass_min_meas'] = data['rass_meas']
+data['last_rass_min_meas'] = data['last_rass_meas']
+
+L_dp = ['driving_pressure']
+L_pf = []
+L_ph = ['ph']
+# Continuous covariates that PRECEDE tidal volume within the same time step causally
+L_cont = [item.lower() for item in [
+    "HeartRate","SysBP","DiasBP","meanbp","RespRate","TempC","rass_min", "PO2",
+    "PCO2","aado2_calc","pao2fio2ratio","spo2","peep_set"
+]]
+# Continuous covariates that FOLLOW tidal volume causally within the same time step
+L_cont2 = ['mean_airway_pressure', 'inspiratory_time', 'peak_insp_pressure']
+L_ordinal = []
+L_binary = ['any_rate_std']
+L_hybrid = ['amount']
+
+L = list(np.concatenate(
+    [L_cont, L_cont2, L_binary, L_ordinal, L_hybrid, L_dp, L_pf, L_ph]
+))
+L_meas = [covariate + '_meas' for covariate in L]
+C = ['control']
+A = ['tidal_volume_set']
+derived = []
+Y = ['hospital_expire_flag']
+
+# TODO: Process and remove outliers
+
+# TODO: Add an extra row when control = 1 at time before exiting hospital
