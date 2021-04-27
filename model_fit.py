@@ -20,7 +20,10 @@ df['last_imputed_TV_standardized_meas'] = df['last_tidal_volume_set_meas']
 
 
 def _group_by_stay(*columns: str):
-    return df.groupby('stay_id', axis='rows')[list(columns)]
+    grouped = df.groupby('stay_id', axis='rows', group_keys=False)
+    if not columns:
+        return grouped
+    return grouped[list(columns)]
 
 def get_last(column: str):
     """Convert each row of a given column into storing the LAST measurement (the value at time t - 1)."""
@@ -36,7 +39,7 @@ def time_since_last(column: str):
         # This gives us a value that increases only when not_measured is true
         cum_sum = not_measured.cumsum()
         # Create a column tracking the value of cum_sum at the last measurement
-        cum_sum_at_last_meas = cum_sum.where(g).ffill()
+        cum_sum_at_last_meas = cum_sum.where(g.astype(bool)).ffill()
         # We can now subtract it from cum_sum to obtain ts_last!
         new_g = cum_sum - cum_sum_at_last_meas
         return new_g
@@ -63,9 +66,9 @@ for p in ('driving_pressure', 'plateau_pressure'):
     # Create column tracking change in measurement from time = t - 1 to time = t
     df[p + '_change'] = df[p] - df['last_' + p]
     # Create column storing the value of the last measurement
-    df['last_' + p + '_change'] = apply_by_stay(_get_last, p + '_change')
+    df['last_' + p + '_change'] = get_last(p + '_change')
     # Create column storing the time since last measurement
-    df[p + '_ts_last'] = apply_by_stay(_get_time_since_last_meas, p + '_meas')
+    df[p + '_ts_last'] = time_since_last(p + '_meas')
     # Create column storing the time since the previous measurement
     df[p+ '_ts_prev'] = time_since_prev(p)
 
@@ -83,14 +86,14 @@ def at_prev_dp_meas(column: str):
         prev_value = at_last_dp_meas.shift(periods=1)     # Track what the 'previous' value would be at any given time point
         condition = (g['driving_pressure_meas']) & (g['study_hour'] > 1)
         return at_last_dp_meas.where(condition, other=prev_value)
-    return grouped.transform(_handle_group)
+    return grouped.apply(_handle_group)
 
 
 df['peep_set_at_prev_dp_meas'] = at_prev_dp_meas('peep_set')
 df['dp_peep_change'] = df['peep_set'] - df['peep_set_at_prev_dp_meas']
 
-df['tidal_volume_set_at_prev_dp_meas'] = at_prev_dp_meas('tidal_volume')
-df['dp_tidal_volume_change'] = df['tidal_volume'] - df['tidal_volume_set_at_prev_dp_meas']
+df['tidal_volume_set_at_prev_dp_meas'] = at_prev_dp_meas('tidal_volume_set')
+df['dp_tidal_volume_change'] = df['tidal_volume_set'] - df['tidal_volume_set_at_prev_dp_meas']
 
 df['dp_at_prev_dp_meas'] = at_prev_dp_meas('driving_pressure')
 df['dp_change_since_prev_dp_meas'] = df['driving_pressure'] - df['dp_at_prev_dp_meas']
@@ -109,15 +112,15 @@ df = df.sort_values(['stay_id', 'hour'])
 
 # TODO: Implement cubic b-spline models for hour and study_hour
 
-data['any_amount'] = data['amount'] > 0 
-data['rate_std_meas'] = 1
-data['any_rate_std_meas'] = 1
-data['last_any_rate_std_meas'] = 1
-data['amount_meas'] = 1
-data['last_rate_std_meas'] = 1
-data['last_amount_meas'] = 1
-data['rass_min_meas'] = data['rass_meas']
-data['last_rass_min_meas'] = data['last_rass_meas']
+df['any_amount'] = df['amount'] > 0 
+df['rate_std_meas'] = 1
+df['any_rate_std_meas'] = 1
+df['last_any_rate_std_meas'] = 1
+df['amount_meas'] = 1
+df['last_rate_std_meas'] = 1
+df['last_amount_meas'] = 1
+df['rass_min_meas'] = df['rass_meas']
+df['last_rass_min_meas'] = df['last_rass_meas']
 
 L_dp = ['driving_pressure']
 L_pf = []
@@ -143,5 +146,13 @@ derived = []
 Y = ['hospital_expire_flag']
 
 # TODO: Process and remove outliers
+df['amount'] = df['amount']/1000
+df['last_amount'] = df['last_amount']/1000
+df['total_fluids'] = df['total_fluids']/1000
+df['last_total_fluids'] = df['last_total_fluids']/1000
+
+df.loc[df['driving_pressure'] <= 0, 'driving_pressure'] = np.nan
+df.loc[df['dp_change_since_prev_dp_meas'].abs() > 10, 'driving_pressure'] = np.nan
+df.loc[df['dp_change_since_prev_dp_meas'].abs() > 10, 'dp_change_since_prev_dp_meas'] = np.nan
 
 # TODO: Add an extra row when control = 1 at time before exiting hospital
