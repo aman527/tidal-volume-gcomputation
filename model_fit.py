@@ -122,6 +122,7 @@ df['last_amount_meas'] = 1
 df['rass_min_meas'] = df['rass_meas']
 df['last_rass_min_meas'] = df['last_rass_meas']
 
+# Coviarates that are modeled separately from those in L_cont
 L_dp = ['driving_pressure']
 L_pf = []
 L_ph = ['ph']
@@ -132,6 +133,7 @@ L_cont = [item.lower() for item in [
 ]]
 # Continuous covariates that FOLLOW tidal volume causally within the same time step
 L_cont2 = ['mean_airway_pressure', 'inspiratory_time', 'peak_insp_pressure']
+# Non-continuous covariates that PRECEDE tidal volume within the same time step causally
 L_ordinal = []
 L_binary = ['any_rate_std']
 L_hybrid = ['amount']
@@ -145,7 +147,7 @@ A = ['tidal_volume_set']
 derived = []
 Y = ['hospital_expire_flag']
 
-# TODO: Process and remove outliers
+# Process and remove outliers
 df['amount'] = df['amount']/1000
 df['last_amount'] = df['last_amount']/1000
 df['total_fluids'] = df['total_fluids']/1000
@@ -154,5 +156,52 @@ df['last_total_fluids'] = df['last_total_fluids']/1000
 df.loc[df['driving_pressure'] <= 0, 'driving_pressure'] = np.nan
 df.loc[df['dp_change_since_prev_dp_meas'].abs() > 10, 'driving_pressure'] = np.nan
 df.loc[df['dp_change_since_prev_dp_meas'].abs() > 10, 'dp_change_since_prev_dp_meas'] = np.nan
+
+df.loc[df['meanbp'] > 200, 'meanbp'] = np.nan
+df.loc[df['rr_set_set'] <= 0, 'rr_set_set'] = np.nan
+df.loc[df['peak_insp_pressure'] <= 0, 'peak_insp_pressure'] = np.nan
+df.loc[df['mean_airway_pressure'] <= 0, 'mean_airway_pressure'] = np.nan
+df.loc[df['inspiratory_time'] <= 0, 'inspiratory_time'] = np.nan
+df.loc[df['aado2_calc'] <= 0, 'aado2_calc'] = np.nan
+df.loc[df['imputed_TV_standardized'] < 2, 'imputed_TV_standardized'] = np.nan
+df.loc[df['imputed_TV_standardized'] > 12, 'imputed_TV_standardized'] = np.nan
+df.loc[df['tidal_volume_set'] < 200, 'imputed_TV_standardized'] = np.nan
+df.loc[df['tidal_volume_set'] < 200, 'imputed_TV_standardized'] = np.nan
+df.loc[df['tidal_volume_set'] < 200, 'tidal_volume_set'] = np.nan
+
+df.loc[df['plateau_pressure'] > 45, 'plateau_pressure'] = np.nan
+df.loc[df['plateau_pressure_change'].abs() > 10, 'plateau_pressure'] = np.nan
+df.loc[df['plateau_pressure_change'].abs() > 10, 'plateau_pressure_change'] = np.nan
+
+condition = (np.log(df['peak_insp_pressure']) > 4) | (np.log(df['peak_insp_pressure']) < 1)
+df.loc[condition, 'peak_insp_pressure'] = np.nan
+
+df.loc[df['mean_airway_pressure'] > 50, 'mean_airway_pressure'] = np.nan
+df.loc[df['inspiratory_time'] > 1.5, 'inspiratory_time'] = np.nan
+df['pao2fio2ratio'] = np.minimum(df['pao2fio2ratio'], 600)
+
+df.loc[df['last_driving_pressure'] <= 0, 'last_driving_pressure'] = np.nan
+df.loc[df['last_meanbp'] > 200, 'last_meanbp'] = np.nan
+df.loc[df['last_rr_set_set'] <= 0, 'last_rr_set_set'] = np.nan
+df.loc[df['last_peak_insp_pressure'] <= 0, 'last_peak_insp_pressure'] = np.nan
+df.loc[df['last_mean_airway_pressure'] <= 0, 'last_mean_airway_pressure'] = np.nan
+df.loc[df['last_inspiratory_time'] <= 0, 'last_inspiratory_time'] = np.nan
+df.loc[df['last_aado2_calc'] <= 0, 'last_aado2_calc'] = np.nan
+df.loc[df['last_imputed_TV_standardized'] < 2, 'last_imputed_TV_standardized'] = np.nan
+df.loc[df['last_imputed_TV_standardized'] > 12, 'last_imputed_TV_standardized'] = np.nan
+df.loc[df['last_tidal_volume_set'] < 200, 'last_imputed_TV_standardized'] = np.nan
+df.loc[df['last_tidal_volume_set'] < 200, 'last_tidal_volume_set'] = np.nan
+
+df.loc[df['last_plateau_pressure'] > 45, 'last_plateau_pressure'] = np.nan
+df.loc[df['last_plateau_pressure_change'].abs() > 10, 'last_plateau_pressure_change'] = np.nan
+
+condition = (np.log(df['last_peak_insp_pressure']) > 4) | (np.log(df['last_peak_insp_pressure']) < 1)
+df.loc[condition, 'last_peak_insp_pressure'] = np.nan
+
+df.loc[df['last_mean_airway_pressure'] > 50, 'last_mean_airway_pressure'] = np.nan
+df.loc[df['last_inspiratory_time'] > 1.5, 'last_inspiratory_time'] = np.nan
+df.loc[df['last_dp_change_since_prev_dp_meas'].abs() > 10, 'last_driving_pressure'] = np.nan
+df.loc[df['last_dp_change_since_prev_dp_meas'].abs() > 10, 'last_dp_change_since_prev_dp_meas'] = np.nan
+df['last_pao2fio2ratio'] = np.minimum(df['last_pao2fio2ratio'], 600)
 
 # TODO: Add an extra row when control = 1 at time before exiting hospital
