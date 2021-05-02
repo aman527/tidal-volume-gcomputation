@@ -25,10 +25,12 @@ def _group_by_stay(*columns: str):
         return grouped
     return grouped[list(columns)]
 
+
 def get_last(column: str):
     """Convert each row of a given column into storing the LAST measurement (the value at time t - 1)."""
     grouped = _group_by_stay(column)
     return grouped.shift(periods=1)
+
 
 def time_since_last(column: str):
     """# Get time since last measurement, where group is a column of bools representing whether a meas was taken."""
@@ -44,6 +46,7 @@ def time_since_last(column: str):
         new_g = cum_sum - cum_sum_at_last_meas
         return new_g
     return grouped.transform(_handle_group)
+
 
 def time_since_prev(column: str):
     """Create new column tracking the time since the previous measurement.
@@ -62,20 +65,6 @@ def time_since_prev(column: str):
     return pd.Series(new_column)
 
 
-for p in ('driving_pressure', 'plateau_pressure'):
-    # Create column tracking change in measurement from time = t - 1 to time = t
-    df[p + '_change'] = df[p] - df['last_' + p]
-    # Create column storing the value of the last measurement
-    df['last_' + p + '_change'] = get_last(p + '_change')
-    # Create column storing the time since last measurement
-    df[p + '_ts_last'] = time_since_last(p + '_meas')
-    # Create column storing the time since the previous measurement
-    df[p+ '_ts_prev'] = time_since_prev(p)
-
-df['peep_set_change'] = df['peep_set'] - df['last_peep_set']
-df['tidal_volume_set_change'] = df['tidal_volume_set'] - df['last_tidal_volume_set']
-
-
 def at_prev_dp_meas(column: str):
     """Get value of a measurement at the previous time driving pressure was measured."""
     grouped = _group_by_stay()
@@ -88,6 +77,19 @@ def at_prev_dp_meas(column: str):
         return at_last_dp_meas.where(condition, other=prev_value)
     return grouped.apply(_handle_group)
 
+
+for p in ('driving_pressure', 'plateau_pressure'):
+    # Create column tracking change in measurement from time = t - 1 to time = t
+    df[p + '_change'] = df[p] - df['last_' + p]
+    # Create column storing the value of the last measurement
+    df['last_' + p + '_change'] = get_last(p + '_change')
+    # Create column storing the time since last measurement
+    df[p + '_ts_last'] = time_since_last(p + '_meas')
+    # Create column storing the time since the previous measurement
+    df[p+ '_ts_prev'] = time_since_prev(p)
+
+df['peep_set_change'] = df['peep_set'] - df['last_peep_set']
+df['tidal_volume_set_change'] = df['tidal_volume_set'] - df['last_tidal_volume_set']
 
 df['peep_set_at_prev_dp_meas'] = at_prev_dp_meas('peep_set')
 df['dp_peep_change'] = df['peep_set'] - df['peep_set_at_prev_dp_meas']
@@ -110,7 +112,45 @@ df['last_total_rate_std'] = get_last('total_rate_std')
 df = df[(df['study_started']) & (df['study_hour'] <= END_HOUR)]
 df = df.sort_values(['stay_id', 'hour'])
 
-# TODO: Implement cubic b-spline models for hour and study_hour
+# Set up cubic b-spline models for hour and study_hour, then add values of basis functions to dataframe
+def prepend(prefix):
+    def _rename_fn(x):
+        return prefix + str(x)
+    return _rename_fn
+
+spline_hours = patsy.bs(df['study_hour'], df=3)
+spline_hours = spline_hours.rename(prepend('study_hour_s'), axis='columns')
+df = df.join(spline_hours)
+
+spline_total_hours = patsy.bs(df['hour'], df=3)
+spline_total_hours = spline_total_hours.rename(prepend('hour_s'), axis='columns')
+df = df.join(spline_total_hours)
+
+hours = pd.DataFrame(patsy.bs(np.arange(END_HOUR), df=3))
+hours = hours.rename(prepend('study_hour_s'), axis='columns')
+
+total_hours = pd.DataFrame(patsy.bs(np.arange(df['hour'].max()), df=3))
+total_hours = total_hours.rename(prepend('hour_s'), axis='columns')
+
+baseline_weight = (
+    _group_by_stay('weight')
+        .head(n=1)
+        .rename({'weight': 'baseline_weight'}, axis='columns')
+)
+df['baseline_weight'] = (
+    df.join(baseline_weight)
+    .loc[:, 'baseline_weight']
+    .ffill()
+)
+# Variables that are baseline covariates or not influenced by past treatment
+V = list(hours.columns) + list(total_hours.columns) + [
+    'baseline_weight', 'age', 'gender', 'imputed_IBW', 'ethnicity', 'elixhauser_score',
+    'first_careunit', 'admission_type', 'admission_location', 'CONGESTIVE_HEART_FAILURE',
+    'VALVULAR_DISEASE', 'PERIPHERAL_VASCULAR', 'HYPERTENSION', 'PARALYSIS', 'CHRONIC_PULMONARY',
+    'DIABETES_UNCOMPLICATED', 'DIABETES_COMPLICATED', 'HYPOTHYROIDISM', 'LIVER_DISEASE',
+    'AIDS', 'LYMPHOMA', 'METASTATIC_CANCER', 'SOLID_TUMOR', 'RHEUMATOID_ARTHRITIS', 'COAGULOPATHY',
+    'OBESITY', 'DEFICIENCY_ANEMIAS', 'ALCOHOL_ABUSE', 'DRUG_ABUSE', 'DEPRESSION'
+]
 
 df['any_amount'] = df['amount'] > 0 
 df['rate_std_meas'] = 1
