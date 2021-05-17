@@ -2,9 +2,13 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import patsy
 
 CWD = Path().absolute()
 END_HOUR = 96
+
+# Constant used in B-spline interpolation on study_hour and hour
+DEGREES_FREEDOM = 3
 
 df = pd.read_csv(CWD / 'driving_pressure_dataset.csv')
 
@@ -27,14 +31,15 @@ def _group_by_stay(*columns: str):
 
 
 def get_last(column: str):
-    """Convert each row of a given column into storing the LAST measurement (the value at time t - 1)."""
+    """Convert each row of a given column into storing the value at time t - 1."""
     grouped = _group_by_stay(column)
     return grouped.shift(periods=1)
 
 
 def time_since_last(column: str):
-    """# Get time since last measurement, where group is a column of bools representing whether a meas was taken."""
+    """Get time since last measurement, where column represents whether a meas was taken."""
     grouped = _group_by_stay(column)
+
     def _handle_group(g):
         not_measured = ~g
         # Take the cumulative sum of the not_measured column
@@ -68,6 +73,7 @@ def time_since_prev(column: str):
 def at_prev_dp_meas(column: str):
     """Get value of a measurement at the previous time driving pressure was measured."""
     grouped = _group_by_stay()
+
     def _handle_group(g):
         # Get the value at the LAST time driving pressure was measured
         at_last_dp_meas = g[column].where(g['driving_pressure_meas']).ffill()
@@ -110,7 +116,7 @@ df['total_rate_std'] = _group_by_stay('rate_std').cumsum()
 df['last_total_rate_std'] = get_last('total_rate_std')
 
 df = df[(df['study_started']) & (df['study_hour'] <= END_HOUR)]
-df = df.sort_values(['stay_id', 'hour'])
+df = df.sort_values(['stay_id', 'study_hour'])
 
 # Set up cubic b-spline models for hour and study_hour, then add values of basis functions to dataframe
 def prepend(prefix):
@@ -118,18 +124,18 @@ def prepend(prefix):
         return prefix + str(x)
     return _rename_fn
 
-spline_hours = patsy.bs(df['study_hour'], df=3)
+spline_hours = patsy.bs(df['study_hour'], df=DEGREES_FREEDOM)
 spline_hours = spline_hours.rename(prepend('study_hour_s'), axis='columns')
 df = df.join(spline_hours)
 
-spline_total_hours = patsy.bs(df['hour'], df=3)
+spline_total_hours = patsy.bs(df['hour'], df=DEGREES_FREEDOM)
 spline_total_hours = spline_total_hours.rename(prepend('hour_s'), axis='columns')
 df = df.join(spline_total_hours)
 
-hours = pd.DataFrame(patsy.bs(np.arange(END_HOUR), df=3))
+hours = pd.DataFrame(patsy.bs(np.arange(END_HOUR), df=DEGREES_FREEDOM))
 hours = hours.rename(prepend('study_hour_s'), axis='columns')
 
-total_hours = pd.DataFrame(patsy.bs(np.arange(df['hour'].max()), df=3))
+total_hours = pd.DataFrame(patsy.bs(np.arange(df['hour'].max()), df=DEGREES_FREEDOM))
 total_hours = total_hours.rename(prepend('hour_s'), axis='columns')
 
 baseline_weight = (
@@ -244,4 +250,41 @@ df.loc[df['last_dp_change_since_prev_dp_meas'].abs() > 10, 'last_driving_pressur
 df.loc[df['last_dp_change_since_prev_dp_meas'].abs() > 10, 'last_dp_change_since_prev_dp_meas'] = np.nan
 df['last_pao2fio2ratio'] = np.minimum(df['last_pao2fio2ratio'], 600)
 
-# TODO: Add an extra row when control = 1 at time before exiting hospital
+# ---- Add an extra row when control = 1 at time before exiting hospital ----
+# Reset indices since rows were removed in previous section
+df.reset_index(inplace=True, drop=True)
+spline_hours.reset_index(inplace=True, drop=True)
+spline_total_hours.reset_index(inplace=True, drop=True)
+# When study_hour == 1, the previous row is the last datapoint in a given stay
+# If that datapoint's study_hour is before the desired end_hour, they must have been released from the hospital
+condition = (df['study_hour'].shift(-1) == 1) & (df['study_hour'] < END_HOUR) & (df['control'] == 1)
+# Store the incorrect rows that list control = 1 as the last entry in a stay
+new_rows = (df.loc[condition]
+    .copy(deep=True)
+    # Reset indices to make assigning values to the rows easier
+    .reset_index(drop=True)
+)
+# Transform into new rows that list control = 0
+# These will later be effectively inserted after the incorrect rows
+new_rows['control'] = 0
+new_rows['study_hour'] += 1
+new_rows['hour'] += 1
+
+variables = L + L_meas + A + C
+for v in variables:
+    new_rows['last_' + v] = new_rows[v]
+
+for i in range(DEGREES_FREEDOM):
+    new_rows['study_hour_s' + str(i)] = (spline_hours
+        .iloc[new_rows['study_hour'], i]
+        .reset_index(drop=True)
+    )
+    new_rows['hour_s' + str(i)] = (spline_total_hours
+        .iloc[new_rows['hour'], i]
+        .reset_index(drop=True)
+    )
+
+# Concatenate the new rows to the dataframe
+df = pd.concat([df, new_rows], ignore_index=True)
+# Sort dataframe by stay_id and hour to insert rows into correct position
+df = df.sort_values(['stay_id', 'study_hour'])
