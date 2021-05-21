@@ -4,6 +4,10 @@ import numpy as np
 import pandas as pd
 import patsy
 
+from sklearn.model_selection import cross_val_predict
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from xgboost import XGBClassifier
+
 CWD = Path().absolute()
 END_HOUR = 96
 
@@ -288,3 +292,113 @@ for i in range(DEGREES_FREEDOM):
 df = pd.concat([df, new_rows], ignore_index=True)
 # Sort dataframe by stay_id and hour to insert rows into correct position
 df = df.sort_values(['stay_id', 'study_hour'])
+
+# Standardize covariates
+covariates = L_cont + L_cont2 + L_pf + L_ph + L_hybrid
+last_covariates = list(map(prepend('last_'), covariates))
+df[covariates] = StandardScaler().fit_transform(df[covariates])
+
+# Predict baseline probability of dying given baseline covariates and adjust for it
+baseline_rows = df.loc[df['study_hour'] == 1]
+# Encode columns with string values as integers
+for c in df[V+L].select_dtypes(include='object'):
+   baseline_rows.loc[:, c] = LabelEncoder().fit_transform(baseline_rows[c])
+model = XGBClassifier(
+    n_estimators=200,
+    max_depth=2,
+    learning_rate=0.3,
+    objective='binary:logistic',
+    missing=np.nan,
+    use_label_encoder=False,
+    eval_metric='rmse'
+)
+preds = cross_val_predict(
+    model,
+    baseline_rows[V + L],
+    baseline_rows['hospital_expire_flag'],
+    cv=10,
+    method='predict_proba'
+)
+baseline_rows['baseline_frailty'] = preds[:, 1]
+df = df.join(baseline_rows['baseline_frailty'])
+df['baseline_frailty'] = df['baseline_frailty'].ffill()
+V += 'baseline_frailty'
+
+# Impute medians
+columns = L + A + ['dp_change_since_prev_dp_meas', 'driving_pressure_change']
+columns += list(map(prepend('last_'), columns))
+columns += V
+for col in df[columns].select_dtypes(include='float'):
+    df[col] = df[col].fillna(df[col].median())
+
+# Impute driving pressure change model predictors
+na_rows = df['peep_set_at_prev_dp_meas'].isna()
+df['peep_set_at_prev_dp_meas'].fillna(
+    df.loc[df['peep_set_at_prev_dp_meas'].isna(), 'last_peep_set'],
+    inplace=True
+)
+df['dp_peep_change'].fillna(0, inplace=True)
+# Since 4 is the most common driving pressure value, we use that to impute
+for dp_col in ('driving_pressure_ts_prev', 'driving_pressure_ts_last'):
+    df[dp_col].fillna(4, inplace=True)
+
+df['tidal_volume_set_at_prev_dp_meas'].fillna(
+    df.loc[df['tidal_volume_set_at_prev_dp_meas'], 'last_tidal_volume_set'],
+    inplace=True
+)
+df['dp_tidal_volume_change'].fillna(0, inplace=True)
+
+# ----- Remove extreme values -----
+df['rate_std'] = np.minimum(df['rate_std'], 10)
+df['last_rate_std'] = np.minimum(df['last_rate_std'], 10)
+
+df['sysbp'] = np.minimum(np.maximum(df['sysbp'], -4), 4)
+df['last_sysbp'] = np.minimum(np.maximum(df['last_sysbp'], -4), 4)
+
+df['diasbp'] = np.minimum(df['diasbp'], 5)
+df['last_diasbp'] = np.minimum(df['last_diasbp'], 5)
+
+df['meanbp'] = np.minimum(np.maximum(df['meanbp'], -4), 4)
+df['last_meanbp'] = np.minimum(np.maximum(df['last_meanbp'], -4), 4)
+
+df['resprate'] = np.minimum(df['resprate'], 4)
+df['last_resprate'] = np.minimum(df['last_resprate'], 4)
+
+df['tempc'] = np.minimum(np.maximum(df['tempc'], -4), 4)
+df['last_tempc'] = np.minimum(np.maximum(df['last_tempc'], -4), 4)
+
+df['heartrate'] = np.minimum(np.maximum(df['heartrate'], -3), 4)
+df['last_heartrate'] = np.minimum(np.maximum(df['last_heartrate'], -3), 4)
+
+df['spo2'] = np.maximum(df['spo2'], -4)
+df['last_spo2'] = np.maximum(df['last_spo2'], 4)
+
+df['po2'] = np.minimum(df['po2'], 5)
+df['last_po2'] = np.minimum(df['last_po2'], 5)
+
+df['pco2'] = np.minimum(df['pco2'], 5)
+df['last_pco2'] = np.minimum(df['last_pco2'], 5)
+
+df['inspiratory_time'] = np.minimum(np.maximum(df['inspiratory_time'], -3), 4)
+df['last_inspiratory_time'] = np.minimum(np.maximum(df['last_inspiratory_time'], -3), 4)
+
+df['imputed_TV_standardized'] = np.maximum(df['imputed_TV_standardized'], 4)
+df['last_imputed_TV_standardized'] = np.maximum(df['last_imputed_TV_standardized'], 4)
+
+df['tidal_volume_set'] = np.minimum(df['tidal_volume_set'], 650)
+df['last_tidal_volume_set'] = np.minimum(df['last_tidal_volume_set'], 650)
+
+df['mean_airway_pressure'] = np.minimum(df['mean_airway_pressure'], 4)
+df['last_mean_airway_pressure'] = np.minimum(df['last_mean_airway_pressure'], 4)
+
+df['amount'] = np.minimum(df['amount'], 10)
+df['last_amount'] = np.minimum(df['last_amount'], 10)
+
+df['driving_pressure'] = np.minimum(df['driving_pressure'], 30)
+df['last_driving_pressure'] = np.minimum(df['last_driving_pressure'], 30)
+
+df['ph'] = np.maximum(df['ph'], -4)
+df['last_ph'] = np.maximum(df['last_ph'], -4)
+
+df['peep_set'] = np.maximum(np.minimum(df['peep_set'], -1), 4)
+df['last_peep_set'] = np.maximum(np.minimum(df['last_peep_set'], -1), 4)
